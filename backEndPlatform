@@ -1,0 +1,246 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract BTAPlatform is ERC721, Ownable, ReentrancyGuard {
+    using Counters for Counters.Counter;
+    Counters.Counter private _tokenIds;
+    
+    // Structs for different user types and achievements
+    struct Creator {
+        string name;
+        string baseName;
+        string warpcastHandle;
+        uint256[] contentIds;
+        uint256[] achievementNFTs;
+        bool isVerified;
+        uint256 participationCount;
+    }
+
+    struct EsportsPlayer {
+        string name;
+        string gameName;
+        string team;
+        uint256[] tournamentIds;
+        uint256[] achievementNFTs;
+        bool isVerified;
+        uint256 tournamentsWon;
+    }
+
+    struct Content {
+        string contentType;    // podcast, music, artwork
+        string ipfsHash;
+        uint256 timestamp;
+        address creator;
+        bool hasAchievementNFT;
+    }
+
+    struct Tournament {
+        string name;
+        string game;
+        uint256 date;
+        address[] participants;
+        address winner;
+        bool completed;
+        bool nftAwarded;
+    }
+
+    struct Achievement {
+        string achievementType; // "BTAParticipation", "TournamentWin"
+        string metadata;
+        uint256 timestamp;
+        address recipient;
+    }
+
+    // Mappings
+    mapping(address => Creator) public creators;
+    mapping(address => EsportsPlayer) public players;
+    mapping(uint256 => Content) public contents;
+    mapping(uint256 => Tournament) public tournaments;
+    mapping(uint256 => Achievement) public achievements;
+    
+    // Events
+    event CreatorRegistered(address indexed creator, string name);
+    event PlayerRegistered(address indexed player, string name, string game);
+    event ContentUploaded(address indexed creator, uint256 contentId);
+    event TournamentCreated(uint256 indexed tournamentId, string name);
+    event TournamentWon(uint256 indexed tournamentId, address winner);
+    event AchievementNFTMinted(address indexed recipient, uint256 tokenId, string achievementType);
+
+    constructor() ERC721("BTA Achievement", "BTAA") {}
+
+    // Creator Functions
+    function registerCreator(
+        string memory _name,
+        string memory _baseName,
+        string memory _warpcastHandle
+    ) public {
+        require(bytes(creators[msg.sender].name).length == 0, "Already registered");
+        
+        creators[msg.sender] = Creator({
+            name: _name,
+            baseName: _baseName,
+            warpcastHandle: _warpcastHandle,
+            contentIds: new uint256[](0),
+            achievementNFTs: new uint256[](0),
+            isVerified: false,
+            participationCount: 0
+        });
+        
+        emit CreatorRegistered(msg.sender, _name);
+    }
+
+    // Esports Player Functions
+    function registerPlayer(
+        string memory _name,
+        string memory _gameName,
+        string memory _team
+    ) public {
+        require(bytes(players[msg.sender].name).length == 0, "Already registered");
+        
+        players[msg.sender] = EsportsPlayer({
+            name: _name,
+            gameName: _gameName,
+            team: _team,
+            tournamentIds: new uint256[](0),
+            achievementNFTs: new uint256[](0),
+            isVerified: false,
+            tournamentsWon: 0
+        });
+        
+        emit PlayerRegistered(msg.sender, _name, _gameName);
+    }
+
+    // Content Management
+    function uploadContent(
+        string memory _contentType,
+        string memory _ipfsHash
+    ) public {
+        require(bytes(creators[msg.sender].name).length > 0, "Not registered creator");
+        
+        _tokenIds.increment();
+        uint256 contentId = _tokenIds.current();
+        
+        contents[contentId] = Content({
+            contentType: _contentType,
+            ipfsHash: _ipfsHash,
+            timestamp: block.timestamp,
+            creator: msg.sender,
+            hasAchievementNFT: false
+        });
+        
+        creators[msg.sender].contentIds.push(contentId);
+        
+        emit ContentUploaded(msg.sender, contentId);
+    }
+
+    // Tournament Management
+    function createTournament(
+        string memory _name,
+        string memory _game
+    ) public onlyOwner {
+        _tokenIds.increment();
+        uint256 tournamentId = _tokenIds.current();
+        
+        tournaments[tournamentId] = Tournament({
+            name: _name,
+            game: _game,
+            date: block.timestamp,
+            participants: new address[](0),
+            winner: address(0),
+            completed: false,
+            nftAwarded: false
+        });
+        
+        emit TournamentCreated(tournamentId, _name);
+    }
+
+    function registerForTournament(uint256 _tournamentId) public {
+        require(bytes(players[msg.sender].name).length > 0, "Not registered player");
+        require(!tournaments[_tournamentId].completed, "Tournament ended");
+        
+        Tournament storage tournament = tournaments[_tournamentId];
+        tournament.participants.push(msg.sender);
+        players[msg.sender].tournamentIds.push(_tournamentId);
+    }
+
+    function declareTournamentWinner(uint256 _tournamentId, address _winner) public onlyOwner {
+        Tournament storage tournament = tournaments[_tournamentId];
+        require(!tournament.completed, "Tournament already completed");
+        
+        tournament.winner = _winner;
+        tournament.completed = true;
+        
+        EsportsPlayer storage winner = players[_winner];
+        winner.tournamentsWon++;
+        
+        // Mint winner NFT
+        mintAchievementNFT(_winner, "TournamentWin", tournament.name);
+        
+        emit TournamentWon(_tournamentId, _winner);
+    }
+
+    // Achievement NFT Functions
+    function mintAchievementNFT(
+        address _recipient,
+        string memory _achievementType,
+        string memory _metadata
+    ) public onlyOwner nonReentrant {
+        _tokenIds.increment();
+        uint256 newTokenId = _tokenIds.current();
+        
+        achievements[newTokenId] = Achievement({
+            achievementType: _achievementType,
+            metadata: _metadata,
+            timestamp: block.timestamp,
+            recipient: _recipient
+        });
+        
+        _safeMint(_recipient, newTokenId);
+        
+        // Update recipient records
+        if (bytes(creators[_recipient].name).length > 0) {
+            creators[_recipient].achievementNFTs.push(newTokenId);
+            if (keccak256(bytes(_achievementType)) == keccak256(bytes("BTAParticipation"))) {
+                creators[_recipient].participationCount++;
+            }
+        } else if (bytes(players[_recipient].name).length > 0) {
+            players[_recipient].achievementNFTs.push(newTokenId);
+        }
+        
+        emit AchievementNFTMinted(_recipient, newTokenId, _achievementType);
+    }
+
+    // Verification Functions
+    function verifyCreator(address _creator) public onlyOwner {
+        require(bytes(creators[_creator].name).length > 0, "Creator not registered");
+        creators[_creator].isVerified = true;
+    }
+    
+    function verifyPlayer(address _player) public onlyOwner {
+        require(bytes(players[_player].name).length > 0, "Player not registered");
+        players[_player].isVerified = true;
+    }
+
+    // View Functions
+    function getCreatorContent(address _creator) public view returns (uint256[] memory) {
+        return creators[_creator].contentIds;
+    }
+    
+    function getPlayerTournaments(address _player) public view returns (uint256[] memory) {
+        return players[_player].tournamentIds;
+    }
+    
+    function getAchievementNFTs(address _account) public view returns (uint256[] memory) {
+        if (bytes(creators[_account].name).length > 0) {
+            return creators[_account].achievementNFTs;
+        } else if (bytes(players[_account].name).length > 0) {
+            return players[_account].achievementNFTs;
+        }
+        return new uint256[](0);
+    }
+}
