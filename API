@@ -1,0 +1,116 @@
+import express from 'express';
+import { ethers } from 'ethers';
+import { NFTStorage } from 'nft.storage';
+
+const router = express.Router();
+const provider = new ethers.providers.JsonRpcProvider(process.env.BASE_RPC_URL);
+const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+const contract = new ethers.Contract(process.env.CONTRACT_ADDRESS, ABI, wallet);
+const nftStorage = new NFTStorage({ token: process.env.NFT_STORAGE_TOKEN });
+
+// Creator Routes
+router.post('/creator/register', async (req, res) => {
+    try {
+        const { address, name, baseName, warpcastHandle } = req.body;
+        
+        const tx = await contract.registerCreator(name, baseName, warpcastHandle);
+        await tx.wait();
+        
+        res.json({ success: true, transaction: tx.hash });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Content Upload Routes
+router.post('/content/upload', async (req, res) => {
+    try {
+        const { file, metadata } = req.body;
+        
+        // Upload to IPFS
+        const blob = new Blob([file]);
+        const cid = await nftStorage.storeBlob(blob);
+        
+        // Record on contract
+        const tx = await contract.uploadContent(
+            metadata.type,
+            ipfs://${cid}
+        );
+        await tx.wait();
+        
+        res.json({
+            success: true,
+            ipfsUrl: ipfs://${cid},
+            transaction: tx.hash
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Esports Routes
+router.post('/tournament/create', async (req, res) => {
+    try {
+        const { name, game } = req.body;
+        
+        const tx = await contract.createTournament(name, game);
+        await tx.wait();
+        
+        res.json({ success: true, transaction: tx.hash });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.post('/tournament/register', async (req, res) => {
+    try {
+        const { tournamentId, playerAddress } = req.body;
+        
+        const tx = await contract.registerForTournament(tournamentId);
+        await tx.wait();
+        
+        res.json({ success: true, transaction: tx.hash });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Achievement NFT Routes
+router.post('/achievement/mint', async (req, res) => {
+    try {
+        const { recipient, achievementType, metadata } = req.body;
+        
+        // Create NFT metadata
+        const nftMetadata = {
+            name: BTA Achievement - ${achievementType},
+            description: metadata.description,
+            image: metadata.image,
+            attributes: [
+                { trait_type: "Achievement Type", value: achievementType },
+                { trait_type: "Date", value: new Date().toISOString() }
+            ]
+        };
+        
+        // Store metadata on IPFS
+        const metadataBlob = new Blob([JSON.stringify(nftMetadata)]);
+        const metadataCid = await nftStorage.storeBlob(metadataBlob);
+        
+        // Mint NFT
+        const tx = await contract.mintAchievementNFT(
+            recipient,
+            achievementType,
+            ipfs://${metadataCid}
+        );
+        await tx.wait();
+        
+        res.json({
+            success: true,
+            metadataUrl: ipfs://${metadataCid},
+            transaction: tx.hash
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+export default router;
