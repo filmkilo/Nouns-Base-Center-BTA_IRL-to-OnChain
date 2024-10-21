@@ -1,0 +1,254 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract NounsCenterRegistry is ERC721, ERC721URIStorage, ERC721Enumerable, Ownable, ReentrancyGuard {
+    using Counters for Counters.Counter;
+    Counters.Counter private _tokenIds;
+    
+    enum ParticipantType { MUSIC_BAND, ARTIST, ESPORT_PLAYER, ENTREPRENEUR }
+    
+    struct Participant {
+        address coinbaseWallet;
+        string baseName;
+        string warpcastUser;
+        ParticipantType participantType;
+        uint256 registrationTimestamp;
+        bool hasParticipated;
+        uint256[] nftIds; // Array to store NFT IDs owned by participant
+    }
+    
+    struct NFTDetails {
+        uint256 tokenId;
+        address creator;
+        uint256 price;
+        bool isForSale;
+        string activityName;
+        uint256 creationDate;
+    }
+    
+    // Mapping from wallet address to Participant
+    mapping(address => Participant) public participants;
+    // Mapping from token ID to NFT details
+    mapping(uint256 => NFTDetails) public nftDetails;
+    // Array to keep track of all registered addresses
+    address[] public registeredAddresses;
+    
+    // Events
+    event ParticipantRegistered(
+        address indexed wallet,
+        string baseName,
+        string warpcastUser,
+        ParticipantType participantType
+    );
+    
+    event ParticipationVerified(
+        address indexed wallet,
+        uint256 timestamp
+    );
+    
+    event NFTMinted(
+        uint256 indexed tokenId,
+        address indexed creator,
+        string activityName,
+        uint256 price
+    );
+    
+    event NFTPurchased(
+        uint256 indexed tokenId,
+        address indexed buyer,
+        address indexed seller,
+        uint256 price
+    );
+    
+    constructor() ERC721("Nouns Center Participation", "NCP") Ownable(msg.sender) {}
+    
+    // Required overrides for multiple inheritance
+    function _update(address to, uint256 tokenId, address auth)
+        internal
+        override(ERC721, ERC721Enumerable)
+        returns (address)
+    {
+        return super._update(to, tokenId, auth);
+    }
+
+    function _increaseBalance(address account, uint128 value)
+        internal
+        override(ERC721, ERC721Enumerable)
+    {
+        super._increaseBalance(account, value);
+    }
+
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (string memory)
+    {
+        return super.tokenURI(tokenId);
+    }
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC721Enumerable, ERC721URIStorage)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+    
+    // Function to register a new participant
+    function registerParticipant(
+        string memory _baseName,
+        string memory _warpcastUser,
+        ParticipantType _type
+    ) public {
+        require(participants[msg.sender].coinbaseWallet == address(0), "Already registered");
+        require(bytes(_baseName).length > 0, "Base name cannot be empty");
+        require(bytes(_warpcastUser).length > 0, "Warpcast user cannot be empty");
+        
+        participants[msg.sender] = Participant({
+            coinbaseWallet: msg.sender,
+            baseName: _baseName,
+            warpcastUser: _warpcastUser,
+            participantType: _type,
+            registrationTimestamp: block.timestamp,
+            hasParticipated: false,
+            nftIds: new uint256[](0)
+        });
+        
+        registeredAddresses.push(msg.sender);
+        
+        emit ParticipantRegistered(msg.sender, _baseName, _warpcastUser, _type);
+    }
+    
+    // Function for admin to mint participation NFT
+    function mintParticipationNFT(
+        address participant,
+        string memory activityName,
+        string memory tokenURI,
+        uint256 price
+    ) public onlyOwner {
+        require(participants[participant].coinbaseWallet != address(0), "Participant not registered");
+        
+        _tokenIds.increment();
+        uint256 newTokenId = _tokenIds.current();
+        
+        _safeMint(participant, newTokenId);
+        _setTokenURI(newTokenId, tokenURI);
+        
+        nftDetails[newTokenId] = NFTDetails({
+            tokenId: newTokenId,
+            creator: participant,
+            price: price,
+            isForSale: true,
+            activityName: activityName,
+            creationDate: block.timestamp
+        });
+        
+        participants[participant].nftIds.push(newTokenId);
+        
+        emit NFTMinted(newTokenId, participant, activityName, price);
+    }
+    
+    // Function to purchase NFT
+    function purchaseNFT(uint256 tokenId) public payable nonReentrant {
+        NFTDetails storage nft = nftDetails[tokenId];
+        require(nft.isForSale, "NFT not for sale");
+        require(msg.value >= nft.price, "Insufficient payment");
+        require(ownerOf(tokenId) != msg.sender, "Cannot buy your own NFT");
+        
+        address seller = ownerOf(tokenId);
+        
+        // Transfer NFT
+        _transfer(seller, msg.sender, tokenId);
+        
+        // Transfer payment to seller
+        (bool sent, ) = payable(seller).call{value: msg.value}("");
+        require(sent, "Failed to send payment");
+        
+        // Update NFT details
+        nft.isForSale = false;
+        
+        // Update participant NFT arrays
+        removeNFTFromParticipant(seller, tokenId);
+        participants[msg.sender].nftIds.push(tokenId);
+        
+        emit NFTPurchased(tokenId, msg.sender, seller, msg.value);
+    }
+    
+    // Helper function to remove NFT from participant's array
+    function removeNFTFromParticipant(address participant, uint256 tokenId) internal {
+        uint256[] storage nftIds = participants[participant].nftIds;
+        for (uint i = 0; i < nftIds.length; i++) {
+            if (nftIds[i] == tokenId) {
+                nftIds[i] = nftIds[nftIds.length - 1];
+                nftIds.pop();
+                break;
+            }
+        }
+    }
+    
+    // Function to set NFT price and sale status
+    function setNFTPrice(uint256 tokenId, uint256 newPrice, bool isForSale) public {
+        require(ownerOf(tokenId) == msg.sender, "Not NFT owner");
+        nftDetails[tokenId].price = newPrice;
+        nftDetails[tokenId].isForSale = isForSale;
+    }
+    
+    // Function to get participant's NFTs
+    function getParticipantNFTs(address participant) public view returns (NFTDetails[] memory) {
+        uint256[] memory nftIds = participants[participant].nftIds;
+        NFTDetails[] memory participantNFTs = new NFTDetails[](nftIds.length);
+        
+        for (uint i = 0; i < nftIds.length; i++) {
+            participantNFTs[i] = nftDetails[nftIds[i]];
+        }
+        
+        return participantNFTs;
+    }
+    
+    // Previous functions remain the same...
+    function isRegistered(address _participant) public view returns (bool) {
+        return participants[_participant].coinbaseWallet != address(0);
+    }
+    
+    function getParticipant(address _participant) 
+        public 
+        view 
+        returns (
+            address coinbaseWallet,
+            string memory baseName,
+            string memory warpcastUser,
+            ParticipantType participantType,
+            uint256 registrationTimestamp,
+            bool hasParticipated,
+            uint256[] memory nftIds
+        ) 
+    {
+        Participant memory p = participants[_participant];
+        return (
+            p.coinbaseWallet,
+            p.baseName,
+            p.warpcastUser,
+            p.participantType,
+            p.registrationTimestamp,
+            p.hasParticipated,
+            p.nftIds
+        );
+    }
+    
+    function getTotalParticipants() public view returns (uint256) {
+        return registeredAddresses.length;
+    }
+    
+    function getAllParticipants() public view returns (address[] memory) {
+        return registeredAddresses;
+    }
+}
